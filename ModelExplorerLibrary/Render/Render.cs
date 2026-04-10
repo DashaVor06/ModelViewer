@@ -181,7 +181,7 @@ namespace ModelExplorerLibrary.Render
         }
 
         //Render
-        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera, bool isPhong = false)
+        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera, bool isPhong = true)
         {
             int width = bmp.Width;
             int height = bmp.Height;
