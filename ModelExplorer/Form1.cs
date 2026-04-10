@@ -109,19 +109,19 @@ namespace ModelExplorer
             switch (e.KeyCode)
             {
                 case Keys.Left:
-                    _settings.RotY += rotSpeed;
+                    _settings.RotX -= rotSpeed;
                     break;
 
                 case Keys.Right:
-                    _settings.RotY -= rotSpeed;
-                    break;
-
-                case Keys.Up:
                     _settings.RotX += rotSpeed;
                     break;
 
+                case Keys.Up:
+                    _settings.RotY -= rotSpeed;
+                    break;
+
                 case Keys.Down:
-                    _settings.RotX -= rotSpeed;
+                    _settings.RotY += rotSpeed;
                     break;
 
                 case Keys.W:

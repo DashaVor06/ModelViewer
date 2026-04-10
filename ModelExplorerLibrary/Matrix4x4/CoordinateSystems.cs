@@ -11,8 +11,8 @@ namespace ModelExplorerLibrary.Matrix4x4
         {
             Matrix model = Transfomations.Scale(settings.ScaleX, settings.ScaleY, settings.ScaleZ);
             Matrix rotation = Rotations.RotateZ(settings.RotZ) *
-                      Rotations.RotateX(settings.RotX) *
-                      Rotations.RotateY(settings.RotY);
+                      Rotations.RotateY(settings.RotX) *
+                      Rotations.RotateX(settings.RotY);
             Matrix translation = Transfomations.Translate(settings.X, settings.Y, settings.Z);
             return  model * rotation * translation;
         }

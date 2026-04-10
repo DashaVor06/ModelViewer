@@ -181,7 +181,7 @@ namespace ModelExplorerLibrary.Render
         }
 
         //Render
-        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera, bool isPhong = true)
+        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera, bool isPhong = false)
         {
             int width = bmp.Width;
             int height = bmp.Height;
@@ -254,7 +254,7 @@ namespace ModelExplorerLibrary.Render
                     }
                     else
                     {
-                        float intensity = Math.Max(0.1f, Vector3.Dot(normal, _lightDir));
+                        float intensity = Math.Max(0.1f, Vector3.Dot(normal, -_lightDir));
                         int c = (int)(200 * intensity);
                         int faceColor = (255 << 24) | (c << 16) | (c << 8) | c;
 
