@@ -1,4 +1,6 @@
-﻿namespace ModelExplorerLibrary.Models
+﻿using System.Numerics;
+
+namespace ModelExplorerLibrary.Models
 {
     public class SettingsClass
     {
@@ -11,5 +13,8 @@
         public float RotX { get; set; }
         public float RotY { get; set; }
         public float RotZ { get; set; }
+        public Vector3 AmbientColor { get; set; }
+        public float SpecularStrength {  get; set; }
+        public int Shininess {  get; set; }
     }
 }

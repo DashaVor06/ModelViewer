@@ -34,7 +34,10 @@ namespace ModelExplorer
                 ScaleZ = 1,
                 RotX = 0,
                 RotY = 0,
-                RotZ = 0
+                RotZ = 0,
+                AmbientColor = new Vector3(0.1f, 0.1f, 0.1f),
+                SpecularStrength = 0.5f,
+                Shininess = 32
             };
 
             _camera = new CameraClass
@@ -101,24 +104,24 @@ namespace ModelExplorer
         private void Form1_KeyDown(object sender, KeyEventArgs e)
         {
             float rotSpeed = 0.1f;
-            float zoomSpeed = 1f;
+            float zoomSpeed = 0.1f;
 
             switch (e.KeyCode)
             {
                 case Keys.Left:
-                    _settings.RotY -= rotSpeed;
-                    break;
-
-                case Keys.Right:
                     _settings.RotY += rotSpeed;
                     break;
 
+                case Keys.Right:
+                    _settings.RotY -= rotSpeed;
+                    break;
+
                 case Keys.Up:
-                    _settings.RotX -= rotSpeed;
+                    _settings.RotX += rotSpeed;
                     break;
 
                 case Keys.Down:
-                    _settings.RotX += rotSpeed;
+                    _settings.RotX -= rotSpeed;
                     break;
 
                 case Keys.W:

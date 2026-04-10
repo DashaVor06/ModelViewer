@@ -9,17 +9,18 @@ namespace ModelExplorerLibrary.Matrix4x4
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Matrix ToWorld(SettingsClass settings)
         {
-            return Transfomations.Scale(settings.ScaleX, settings.ScaleY, settings.ScaleZ) *
-                   Rotations.RotateY(settings.RotY) *
-                   Rotations.RotateX(settings.RotX) * 
-                   Rotations.RotateZ(settings.RotZ) * 
-                   Transfomations.Translate(settings.X, settings.Y, settings.Z);
+            Matrix model = Transfomations.Scale(settings.ScaleX, settings.ScaleY, settings.ScaleZ);
+            Matrix rotation = Rotations.RotateZ(settings.RotZ) *
+                      Rotations.RotateX(settings.RotX) *
+                      Rotations.RotateY(settings.RotY);
+            Matrix translation = Transfomations.Translate(settings.X, settings.Y, settings.Z);
+            return  model * rotation * translation;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Matrix WorldToView(Vector3 eye, Vector3 target, Vector3 up)
         {
-            Vector3 zAxis = Vector3.Normalize(target-eye);
+            Vector3 zAxis = Vector3.Normalize(eye - target);
             Vector3 xAxis = Vector3.Normalize(Vector3.Cross(up, zAxis));
             Vector3 yAxis = Vector3.Cross(zAxis, xAxis);
 
