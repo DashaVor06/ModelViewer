@@ -10,56 +10,7 @@ namespace ModelExplorerLibrary.Render
     {
         private int _bgColor = Color.White.ToArgb();
         private Vector3 _lightDir = Vector3.Normalize(new Vector3(-0.5f, 0.5f, 1.0f));
-
-        //Lambert
-        private unsafe void DrawHorizontalLineLambert(int* pBase, float[] zBuffer, int width, int height, int stride, int x1, int x2, int y, float z1, float z2, int color)
-        {
-            if (y < 0 || y >= height) return;
-            if (x1 > x2) { (x1, x2) = (x2, x1); (z1, z2) = (z2, z1); }
-
-            int startX = Math.Max(0, x1);
-            int endX = Math.Min(width - 1, x2);
-
-            for (int x = startX; x <= endX; x++)
-            {
-                float t = (x1 == x2) ? 0 : (float)(x - x1) / (x2 - x1);
-                float currentZ = z1 + (z2 - z1) * t;
-
-                int idx = y * width + x;
-
-                if (currentZ < zBuffer[idx])
-                {
-                    zBuffer[idx] = currentZ;
-                    int offset = y * (stride / 4) + x;
-                    *(pBase + offset) = color;
-                }
-            }
-        }
-
-        private unsafe void FillTriangleScanlineLambert(int* pBase, float[] zBuffer, int width, int height, int stride, Vector4 v0, Vector4 v1, Vector4 v2, int color)
-        {
-            if (v1.Y < v0.Y) (v0, v1) = (v1, v0);
-            if (v2.Y < v0.Y) (v0, v2) = (v2, v0);
-            if (v2.Y < v1.Y) (v1, v2) = (v2, v1);
-
-            float totalHeight = v2.Y - v0.Y;
-            if (totalHeight == 0) return;
-
-            for (int y = (int)Math.Ceiling(v0.Y); y <= (int)Math.Floor(v2.Y); y++)
-            {
-                bool secondHalf = y > v1.Y || v1.Y == v0.Y;
-                float segmentHeight = secondHalf ? v2.Y - v1.Y : v1.Y - v0.Y;
-                if (segmentHeight == 0) continue;
-
-                float alpha = (y - v0.Y) / totalHeight;
-                float beta = secondHalf ? (y - v1.Y) / (v2.Y - v1.Y) : (y - v0.Y) / (v1.Y - v0.Y);
-
-                Vector4 A = v0 + (v2 - v0) * alpha;
-                Vector4 B = secondHalf ? v1 + (v2 - v1) * beta : v0 + (v1 - v0) * beta;
-
-                DrawHorizontalLineLambert(pBase, zBuffer, width, height, stride, (int)Math.Round(A.X), (int)Math.Round(B.X), y, A.Z, B.Z, color);
-            }
-        }
+        private float[] _zBuffer;
 
         //Phong
         struct VertexData
@@ -181,18 +132,24 @@ namespace ModelExplorerLibrary.Render
         }
 
         //Render
-        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera, bool isPhong = true)
+        public unsafe void RenderModel(Bitmap bmp, ModelClass model, SettingsClass settings, CameraClass camera)
         {
             int width = bmp.Width;
             int height = bmp.Height;
-            BitmapData data = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
 
+            // LockBits должен быть единственным местом доступа к памяти
+            BitmapData data = bmp.LockBits(new Rectangle(0, 0, width, height),
+                              ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
             try
             {
                 int* pBase = (int*)data.Scan0;
                 int stride = data.Stride;
-                float[] zBuffer = new float[width * height];
-                Array.Fill(zBuffer, float.MaxValue);
+
+                if (_zBuffer == null || _zBuffer.Length != width * height)
+                    _zBuffer = new float[width * height];
+
+                Array.Fill(_zBuffer, float.MaxValue);
+
                 for (int i = 0; i < width * height; i++) pBase[i] = _bgColor;
 
                 Matrix modelMatrix = CoordinateSystems.ToWorld(settings);
@@ -203,7 +160,7 @@ namespace ModelExplorerLibrary.Render
                 Matrix viewportMatrix = CoordinateSystems.PerspectiveToWindowOfView(0, 0, width, height);
                 Matrix mvp = viewportMatrix * projectionMatrix * viewMatrix * modelMatrix;
 
-                Vector3[] vertexNormals = isPhong ? ComputeVertexNormals(model) : null;
+                Vector3[] vertexNormals = ComputeVertexNormals(model);
 
                 foreach (var face in model.Faces)
                 {
@@ -227,40 +184,28 @@ namespace ModelExplorerLibrary.Render
 
                     if ((p1.X - p0.X) * (p2.Y - p0.Y) - (p1.Y - p0.Y) * (p2.X - p0.X) >= 0) continue;
 
-                    if (isPhong)
-                    {
-                        FillTriangleScanlinePhong(pBase, zBuffer, width, height, stride,
-                            new VertexData
-                            {
-                                ScreenPos = new Vector4(p0.X, p0.Y, c0.W, 1),
-                                WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z),
-                                Normal = TransformNormal(vertexNormals[i0], modelMatrix)
-                            },
-                            new VertexData
-                            {
-                                ScreenPos = new Vector4(p1.X, p1.Y, c1.W, 1),
-                                WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z),
-                                Normal = TransformNormal(vertexNormals[i1], modelMatrix)
-                            },
-                            new VertexData
-                            {
-                                ScreenPos = new Vector4(p2.X, p2.Y, c2.W, 1),
-                                WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z),
-                                Normal = TransformNormal(vertexNormals[i2], modelMatrix)
-                            },
-                            camera.Eye,
-                            settings
-                        );
-                    }
-                    else
-                    {
-                        float intensity = Math.Max(0.1f, Vector3.Dot(normal, -_lightDir));
-                        int c = (int)(200 * intensity);
-                        int faceColor = (255 << 24) | (c << 16) | (c << 8) | c;
-
-                        FillTriangleScanlineLambert(pBase, zBuffer, width, height, stride,
-                            new Vector4(p0.X, p0.Y, c0.W, 1), new Vector4(p1.X, p1.Y, c1.W, 1), new Vector4(p2.X, p2.Y, c2.W, 1), faceColor);
-                    }
+                    FillTriangleScanlinePhong(pBase, _zBuffer, width, height, stride,
+                        new VertexData
+                        {
+                            ScreenPos = new Vector4(p0.X, p0.Y, c0.W, 1),
+                            WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z),
+                            Normal = TransformNormal(vertexNormals[i0], modelMatrix)
+                        },
+                        new VertexData
+                        {
+                            ScreenPos = new Vector4(p1.X, p1.Y, c1.W, 1),
+                            WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z),
+                            Normal = TransformNormal(vertexNormals[i1], modelMatrix)
+                        },
+                        new VertexData
+                        {
+                            ScreenPos = new Vector4(p2.X, p2.Y, c2.W, 1),
+                            WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z),
+                            Normal = TransformNormal(vertexNormals[i2], modelMatrix)
+                        },
+                        camera.Eye,
+                        settings
+                    );
                 }
             }
             finally { bmp.UnlockBits(data); }

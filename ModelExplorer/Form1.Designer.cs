@@ -28,12 +28,20 @@
         /// </summary>
         private void InitializeComponent()
         {
+            components = new System.ComponentModel.Container();
+            timer = new System.Windows.Forms.Timer(components);
             SuspendLayout();
+            // 
+            // timer
+            // 
+            timer.Interval = 16;
+            timer.Tick += timer1_Tick;
             // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
+            BackColor = SystemColors.Window;
             ClientSize = new Size(817, 450);
             DoubleBuffered = true;
             Name = "Form1";
@@ -47,5 +55,7 @@
         }
 
         #endregion
+
+        private System.Windows.Forms.Timer timer;
     }
 }

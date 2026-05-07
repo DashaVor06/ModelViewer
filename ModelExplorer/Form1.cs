@@ -1,7 +1,9 @@
 using System.Numerics;
+using System.Reflection;
 using ModelExplorerLibrary.Models;
 using ModelExplorerLibrary.Parser;
 using ModelExplorerLibrary.Render;
+using System.Diagnostics;
 
 namespace ModelExplorer
 {
@@ -13,16 +15,18 @@ namespace ModelExplorer
         private Bitmap _backBuffer;
         private SettingsClass _settings;
         private CameraClass _camera;
+        private bool _isDirty = false;
+        private bool _isRendering = false;
+        private Bitmap _frontBuffer;
+        private Stopwatch _fpsTimer = new Stopwatch();
 
         public Form1()
         {
             InitializeComponent();
 
-            this.DoubleBuffered = true;
-            this.KeyPreview = true;
-            this.BackColor = Color.White;
-
-            _backBuffer = new Bitmap(this.ClientSize.Width, this.ClientSize.Height);
+            _backBuffer = new Bitmap(ClientSize.Width, ClientSize.Height);
+            _frontBuffer = new Bitmap(ClientSize.Width, ClientSize.Height);
+            timer.Start();
 
             _settings = new SettingsClass
             {
@@ -92,13 +96,16 @@ namespace ModelExplorer
                 _model = _parser.Load(dialog.FileName);
                 CenterAndScaleModel();
                 _render.RenderModel(_backBuffer, _model, _settings, _camera);
-                this.Invalidate();
+                Redraw();
             }
         }
 
         private void Form1_Paint(object sender, PaintEventArgs e)
         {
-            e.Graphics.DrawImage(_backBuffer, 0, 0);
+            lock (_frontBuffer)
+            {
+                e.Graphics.DrawImage(_frontBuffer, 0, 0);
+            }
         }
 
         private void Form1_KeyDown(object sender, KeyEventArgs e)
@@ -138,17 +145,67 @@ namespace ModelExplorer
             Redraw();
         }
 
-        private void Redraw()
+        private async void Redraw()
         {
-            _render.RenderModel(_backBuffer, _model, _settings, _camera);
+            // 1. Защита от наложения: если уже рендерим, выходим
+            if (_isRendering) return;
+
+            // 2. Ограничение частоты (не чаще 60 FPS)
+            if (_fpsTimer.IsRunning && _fpsTimer.ElapsedMilliseconds < 16) return;
+
+            _fpsTimer.Restart();
+            _isRendering = true;
+
+            // 3. Копируем переменные для потока
+            var model = _model;
+            var settings = _settings;
+            var camera = _camera;
+
+            // 4. Тяжелый рендеринг в фоновом потоке
+            await Task.Run(() => {
+                _render.RenderModel(_backBuffer, model, settings, camera);
+            });
+
+            // 5. Потокобезопасный "своп" буферов
+            lock (_frontBuffer)
+            {
+                using (Graphics g = Graphics.FromImage(_frontBuffer))
+                {
+                    g.DrawImage(_backBuffer, 0, 0);
+                }
+            }
+
+            // 6. Перерисовка
             Invalidate();
+            _isRendering = false;
         }
 
         private void Form1_Resize(object sender, EventArgs e)
         {
+            // Защита от нулевого размера при минимизации
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+
+            // Освобождаем старые буферы
             _backBuffer?.Dispose();
+            _frontBuffer?.Dispose();
+
+            // Создаем новые
             _backBuffer = new Bitmap(ClientSize.Width, ClientSize.Height);
+            _frontBuffer = new Bitmap(ClientSize.Width, ClientSize.Height);
+
+            // Принудительно перерисовываем
             Redraw();
+        }
+
+        private void timer1_Tick(object sender, EventArgs e)
+        {
+            if (_isDirty)
+            {
+                timer.Stop(); 
+                Redraw();
+                _isDirty = false;
+                timer.Start();
+            }
         }
     }
 }
