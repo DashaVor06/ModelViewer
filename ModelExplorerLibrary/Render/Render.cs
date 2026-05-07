@@ -39,6 +39,64 @@ namespace ModelExplorerLibrary.Render
             }
         }
 
+        private Bitmap? _normalMap;
+        private BitmapData _normData;
+        private unsafe byte* _normPtr = null;
+        private int _normWidth, _normHeight, _normStride;
+
+        public unsafe Bitmap? NormalMap
+        {
+            get => _normalMap;
+            set
+            {
+                if (_normalMap != null) _normalMap.UnlockBits(_normData);
+                _normalMap = value;
+                if (_normalMap != null)
+                {
+                    _normWidth = _normalMap.Width;
+                    _normHeight = _normalMap.Height;
+                    _normData = _normalMap.LockBits(new Rectangle(0, 0, _normWidth, _normHeight),
+                                   ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+                    _normPtr = (byte*)_normData.Scan0;
+                    _normStride = _normData.Stride;
+                }
+                else { _normPtr = null; }
+            }
+        }
+
+        private Bitmap? _specularMap;
+        private BitmapData _specData;
+        private unsafe byte* _specPtr = null;
+        private int _specWidth, _specHeight, _specStride;
+
+        public unsafe Bitmap? SpecularMap
+        {
+            get => _specularMap;
+            set
+            {
+                if (_specularMap != null)
+                    _specularMap.UnlockBits(_specData);
+
+                _specularMap = value;
+
+                if (_specularMap != null)
+                {
+                    _specWidth = _specularMap.Width;
+                    _specHeight = _specularMap.Height;
+                    _specData = _specularMap.LockBits(
+                        new Rectangle(0, 0, _specWidth, _specHeight),
+                        ImageLockMode.ReadOnly,
+                        PixelFormat.Format32bppPArgb);
+                    _specPtr = (byte*)_specData.Scan0;
+                    _specStride = _specData.Stride;
+                }
+                else
+                {
+                    _specPtr = null;
+                }
+            }
+        }
+
         struct VertexData
         {
             public Vector4 ScreenPos;
@@ -74,14 +132,16 @@ namespace ModelExplorerLibrary.Render
         {
             return new VertexData
             {
+                // Линейная интерполяция экранных координат и подготовленных атрибутов
                 ScreenPos = v1.ScreenPos + (v2.ScreenPos - v1.ScreenPos) * t,
-                WorldPos = Vector3.Lerp(v1.WorldPos, v2.WorldPos, t),
-                Normal = Vector3.Normalize(Vector3.Lerp(v1.Normal, v2.Normal, t)),
-                TexCoord = Vector2.Lerp(v1.TexCoord, v2.TexCoord, t)
+                WorldPos = v1.WorldPos + (v2.WorldPos - v1.WorldPos) * t,
+                Normal = v1.Normal + (v2.Normal - v1.Normal) * t,
+                TexCoord = v1.TexCoord + (v2.TexCoord - v1.TexCoord) * t,
+                Tangent = v1.Tangent + (v2.Tangent - v1.Tangent) * t
             };
         }
 
-        private unsafe void FillTriangleScanlinePhong(int* pBase, float[] zBuffer, int width, int height, int stride, VertexData v0, VertexData v1, VertexData v2, Vector3 cameraPos, SettingsClass settings)
+        private unsafe void FillTriangleScanlinePhong(int* pBase, float[] zBuffer, int width, int height, int stride, VertexData v0, VertexData v1, VertexData v2, Vector3 cameraPos, SettingsClass settings, Matrix modelMatrix)
         {
             if (v1.ScreenPos.Y < v0.ScreenPos.Y) (v0, v1) = (v1, v0);
             if (v2.ScreenPos.Y < v0.ScreenPos.Y) (v0, v2) = (v2, v0);
@@ -102,21 +162,40 @@ namespace ModelExplorerLibrary.Render
                 VertexData A = InterpolateVertex(v0, v2, alpha);
                 VertexData B = secondHalf ? InterpolateVertex(v1, v2, beta) : InterpolateVertex(v0, v1, beta);
 
-                DrawHorizontalLinePhong(pBase, zBuffer, width, height, stride, A, B, y, cameraPos, settings);
+                DrawHorizontalLinePhong(pBase, zBuffer, width, height, stride, A, B, y, cameraPos, settings, modelMatrix);
             }
         }
 
-        private unsafe void DrawHorizontalLinePhong(int* pBase, float[] zBuffer, int width, int height, int stride, VertexData a, VertexData b, int y, Vector3 cameraPos, SettingsClass settings)
+        private unsafe void DrawHorizontalLinePhong(
+            int* pBase,
+            float[] zBuffer,
+            int width,
+            int height,
+            int stride,
+            VertexData a,
+            VertexData b,
+            int y,
+            Vector3 cameraPos,
+            SettingsClass settings,
+            Matrix modelMatrix)
         {
             if (y < 0 || y >= height) return;
+
+            // Сортировка по X для сканирования слева направо
             if (a.ScreenPos.X > b.ScreenPos.X) (a, b) = (b, a);
 
             int startX = (int)Math.Max(0, Math.Ceiling(a.ScreenPos.X));
             int endX = (int)Math.Min(width - 1, Math.Floor(b.ScreenPos.X));
 
+            float widthX = b.ScreenPos.X - a.ScreenPos.X;
+            if (widthX < 1e-6f) return;
+
             for (int x = startX; x <= endX; x++)
             {
-                float t = (Math.Abs(b.ScreenPos.X - a.ScreenPos.X) < 1e-6) ? 0 : (x - a.ScreenPos.X) / (b.ScreenPos.X - a.ScreenPos.X);
+                float t = (x - a.ScreenPos.X) / widthX;
+
+                // 1. Интерполируем 1/W и Z (глубина для буфера)
+                float interpolatedInvW = a.ScreenPos.W + (b.ScreenPos.W - a.ScreenPos.W) * t;
                 float currentZ = a.ScreenPos.Z + (b.ScreenPos.Z - a.ScreenPos.Z) * t;
 
                 int idx = y * width + x;
@@ -124,31 +203,91 @@ namespace ModelExplorerLibrary.Render
                 {
                     zBuffer[idx] = currentZ;
 
-                    Vector3 N = Vector3.Normalize(Vector3.Lerp(a.Normal, b.Normal, t));
-                    Vector3 V = Vector3.Normalize(-cameraPos + Vector3.Lerp(a.WorldPos, b.WorldPos, t));
-                    Vector3 L = Vector3.Normalize(-_lightDir);
-                    Vector3 R = Vector3.Reflect(_lightDir, N);
+                    // 2. Вычисляем текущее W для восстановления атрибутов
+                    float currentW = 1.0f / interpolatedInvW;
 
-                    float diff = Math.Max(Vector3.Dot(N, L), 0.0f);
-                    float spec = MathF.Pow(Math.Max(Vector3.Dot(R, V), 0.0f), settings.Shininess);
-                    Vector3 finalColor = settings.AmbientColor + (diff * new Vector3(0.8f)) + (settings.SpecularStrength * spec * Vector3.One);
+                    // 3. Восстановление атрибутов (Perspective Correct Mapping)
+                    // Эти значения должны быть предварительно разделены на W в Vertex Shader
+                    Vector2 uv = (a.TexCoord + (b.TexCoord - a.TexCoord) * t) * currentW;
+                    Vector3 worldPos = (a.WorldPos + (b.WorldPos - a.WorldPos) * t) * currentW;
 
-                    // БЫСТРЫЙ ДОСТУП К ТЕКСТУРЕ
-                    if (_texPtr != null)
+                    // Очистка UV (Frac)
+                    float u = uv.X - MathF.Floor(uv.X);
+                    float v = uv.Y - MathF.Floor(uv.Y);
+
+                    //-----------------------------------------
+                    // NORMAL MAPPING
+                    //-----------------------------------------
+                    Vector3 N;
+                    if (_normPtr != null)
                     {
-                        Vector2 uv = Vector2.Lerp(a.TexCoord, b.TexCoord, t);
-                        int texX = (int)((uv.X - MathF.Floor(uv.X)) * (_texWidth - 1));
-                        int texY = (int)((1 - (uv.Y - MathF.Floor(uv.Y))) * (_texHeight - 1));
+                        int nx = (int)(u * (_normWidth - 1));
+                        int ny = (int)((1.0f - v) * (_normHeight - 1));
+                        byte* pNorm = _normPtr + (ny * _normStride) + (nx * 4);
 
-                        byte* pSource = _texPtr + (texY * _texStride) + (texX * 4);
-                        finalColor *= new Vector3(pSource[2] / 255f, pSource[1] / 255f, pSource[0] / 255f);
+                        Vector3 rawNormal = new Vector3(
+                            (pNorm[2] / 255f) * 2f - 1f,
+                            (pNorm[1] / 255f) * 2f - 1f,
+                            (pNorm[0] / 255f) * 2f - 1f
+                        );
+
+                        // Восстанавливаем базис TBN
+                        Vector3 T = Vector3.Normalize((a.Tangent + (b.Tangent - a.Tangent) * t) * currentW);
+                        Vector3 N0 = Vector3.Normalize((a.Normal + (b.Normal - a.Normal) * t) * currentW);
+                        Vector3 B = Vector3.Normalize(Vector3.Cross(N0, T));
+
+                        N = Vector3.Normalize(T * rawNormal.X + B * rawNormal.Y + N0 * rawNormal.Z);
+                    }
+                    else
+                    {
+                        N = Vector3.Normalize((a.Normal + (b.Normal - a.Normal) * t) * currentW);
                     }
 
-                    int r = (int)(Math.Clamp(finalColor.X, 0, 1) * 255);
-                    int g = (int)(Math.Clamp(finalColor.Y, 0, 1) * 255);
-                    int b_col = (int)(Math.Clamp(finalColor.Z, 0, 1) * 255);
+                    //-----------------------------------------
+                    // LIGHTING (Phong Reflection Model)
+                    //-----------------------------------------
+                    Vector3 L = Vector3.Normalize(-_lightDir);
+                    Vector3 V = Vector3.Normalize(cameraPos - worldPos);
+                    Vector3 R = Vector3.Normalize(Vector3.Reflect(L, N));
 
-                    *(pBase + y * (stride / 4) + x) = (255 << 24) | (r << 16) | (g << 8) | b_col;
+                    // Diffuse
+                    float diff = Math.Max(Vector3.Dot(N, L), 0.0f);
+
+                    // Specular
+                    float specStrength = settings.SpecularStrength;
+                    if (_specPtr != null)
+                    {
+                        int sx = (int)(u * (_specWidth - 1));
+                        int sy = (int)((1.0f - v) * (_specHeight - 1));
+                        byte* pSpec = _specPtr + (sy * _specStride) + (sx * 4);
+                        specStrength *= (pSpec[2] / 255f);
+                    }
+
+                    float spec = MathF.Pow(Math.Max(Vector3.Dot(R, V), 0.0f), settings.Shininess);
+
+                    //-----------------------------------------
+                    // COLOR COMPOSITION
+                    //-----------------------------------------
+                    Vector3 texColor = Vector3.One;
+                    if (_texPtr != null)
+                    {
+                        int tx = (int)(u * (_texWidth - 1));
+                        int ty = (int)((1.0f - v) * (_texHeight - 1));
+                        byte* pSrc = _texPtr + (ty * _texStride) + (tx * 4);
+                        texColor = new Vector3(pSrc[2] / 255f, pSrc[1] / 255f, pSrc[0] / 255f);
+                    }
+
+                    Vector3 finalColor = (settings.AmbientColor + (diff * new Vector3(0.8f))) * texColor
+                                         + (spec * specStrength * Vector3.One);
+
+                    //-----------------------------------------
+                    // WRITE PIXEL
+                    //-----------------------------------------
+                    int colorR = (int)(Math.Clamp(finalColor.X, 0, 1) * 255);
+                    int colorG = (int)(Math.Clamp(finalColor.Y, 0, 1) * 255);
+                    int colorB = (int)(Math.Clamp(finalColor.Z, 0, 1) * 255);
+
+                    pBase[y * (stride / 4) + x] = (255 << 24) | (colorR << 16) | (colorG << 8) | colorB;
                 }
             }
         }
@@ -214,40 +353,52 @@ namespace ModelExplorerLibrary.Render
                             new Vector3(v2_w.X - v0_w.X, v2_w.Y - v0_w.Y, v2_w.Z - v0_w.Z),
                             new Vector3(v1_w.X - v0_w.X, v1_w.Y - v0_w.Y, v1_w.Z - v0_w.Z)));
 
+                    // Проекция координат
                     Vector4 c0 = mvp * new Vector4(model.Vertices[i0], 1);
                     Vector4 c1 = mvp * new Vector4(model.Vertices[i1], 1);
                     Vector4 c2 = mvp * new Vector4(model.Vertices[i2], 1);
 
                     if (c0.W <= 0 || c1.W <= 0 || c2.W <= 0) continue;
 
-                    Vector4 p0 = c0 / c0.W; Vector4 p1 = c1 / c1.W; Vector4 p2 = c2 / c2.W;
+                    // NDC -> Screen
+                    Vector4 p0 = c0 / c0.W;
+                    Vector4 p1 = c1 / c1.W;
+                    Vector4 p2 = c2 / c2.W;
 
+                    // Backface culling
                     if ((p1.X - p0.X) * (p2.Y - p0.Y) - (p1.Y - p0.Y) * (p2.X - p0.X) >= 0) continue;
+
+                    // Важно: invW — это то, что мы будем интерполировать линейно
+                    float invW0 = 1.0f / c0.W;
+                    float invW1 = 1.0f / c1.W;
+                    float invW2 = 1.0f / c2.W;
 
                     FillTriangleScanlinePhong(pBase, _zBuffer, width, height, stride,
                         new VertexData
                         {
-                            ScreenPos = new Vector4(p0.X, p0.Y, c0.W, 1),
-                            WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z),
-                            Normal = TransformNormal(vertexNormals[i0], modelMatrix),
-                            TexCoord = face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero
+                            ScreenPos = new Vector4(p0.X, p0.Y, p0.Z, invW0),
+                            WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z) * invW0,
+                            Normal = TransformNormal(vertexNormals[i0], modelMatrix) * invW0,
+                            TexCoord = (face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero) * invW0,
+                            Tangent = tangent * invW0
                         },
                         new VertexData
                         {
-                            ScreenPos = new Vector4(p1.X, p1.Y, c1.W, 1),
-                            WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z),
-                            Normal = TransformNormal(vertexNormals[i1], modelMatrix),
-                            TexCoord = face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero
+                            ScreenPos = new Vector4(p1.X, p1.Y, p1.Z, invW1),
+                            WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z) * invW1,
+                            Normal = TransformNormal(vertexNormals[i1], modelMatrix) * invW1,
+                            TexCoord = (face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero) * invW1,
+                            Tangent = tangent * invW1
                         },
                         new VertexData
                         {
-                            ScreenPos = new Vector4(p2.X, p2.Y, c2.W, 1),
-                            WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z),
-                            Normal = TransformNormal(vertexNormals[i2], modelMatrix),
-                            TexCoord = face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero
+                            ScreenPos = new Vector4(p2.X, p2.Y, p2.Z, invW2),
+                            WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z) * invW2,
+                            Normal = TransformNormal(vertexNormals[i2], modelMatrix) * invW2,
+                            TexCoord = (face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero) * invW2,
+                            Tangent = tangent * invW2
                         },
-                        camera.Eye,
-                        settings
+                        camera.Eye, settings, modelMatrix
                     );
                 }
             }

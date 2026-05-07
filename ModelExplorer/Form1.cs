@@ -41,7 +41,7 @@ namespace ModelExplorer
                 RotY = 0,
                 RotZ = 0,
                 AmbientColor = new Vector3(0.1f, 0.1f, 0.1f),
-                SpecularStrength = 0.5f,
+                SpecularStrength = 0.8f,
                 Shininess = 32
             };
 
@@ -99,25 +99,34 @@ namespace ModelExplorer
                 _model = _parser.Load(dialog.FileName);
                 CenterAndScaleModel();
 
-                // Диалоговое окно с информацией о необходимости выбора диффузной карты
-                MessageBox.Show(
-                    "Необходимо выбрать файл диффузной карты",
-                    "Выбор диффузной карты",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-
                 // Открываем диалог выбора диффузной карты
-                using var textureDialog = new OpenFileDialog();
-                textureDialog.Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.tga|All files|*.*";
-                textureDialog.Title = "Выберите файл диффузной карты";
-
-                if (textureDialog.ShowDialog() == DialogResult.OK)
+                using (var texDialog = new OpenFileDialog { Title = "Диффузная карта" })
                 {
-                    _render.DiffuseMap?.Dispose();
-                    _render.DiffuseMap = new Bitmap(textureDialog.FileName);
+                    if (texDialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        _render.DiffuseMap?.Dispose();
+                        _render.DiffuseMap = new Bitmap(texDialog.FileName);
+                    }
                 }
 
-               
+                using (var normDialog = new OpenFileDialog { Title = "Карта нормалей" })
+                {
+                    if (normDialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        _render.NormalMap?.Dispose();
+                        _render.NormalMap = new Bitmap(normDialog.FileName);
+                    }
+                }
+
+                using (var specDialog = new OpenFileDialog { Title = "Карта зеркальности" })
+                {
+                    if (specDialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        _render.SpecularMap?.Dispose();
+                        _render.SpecularMap = new Bitmap(specDialog.FileName);
+                    }
+                }
+
                 Redraw();
             }
         }
@@ -132,7 +141,7 @@ namespace ModelExplorer
 
         private void Form1_KeyDown(object sender, KeyEventArgs e)
         {
-            float rotSpeed = 0.1f;
+            float rotSpeed = 0.05f;
             float zoomSpeed = 0.1f;
 
             switch (e.KeyCode)
