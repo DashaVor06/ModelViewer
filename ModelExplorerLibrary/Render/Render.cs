@@ -12,12 +12,40 @@ namespace ModelExplorerLibrary.Render
         private Vector3 _lightDir = Vector3.Normalize(new Vector3(-0.5f, 0.5f, 1.0f));
         private float[] _zBuffer;
 
-        //Phong
+        private Bitmap? _diffuseMap;
+        private BitmapData _texData;
+        private unsafe byte* _texPtr = null;
+        private int _texWidth, _texHeight, _texStride;
+        public unsafe Bitmap? DiffuseMap
+        {
+            get => _diffuseMap;
+            set
+            {
+                if (_diffuseMap != null) _diffuseMap.UnlockBits(_texData);
+                _diffuseMap = value;
+                if (_diffuseMap != null)
+                {
+                    _texWidth = _diffuseMap.Width;
+                    _texHeight = _diffuseMap.Height;
+                    _texData = _diffuseMap.LockBits(new Rectangle(0, 0, _texWidth, _texHeight),
+                               ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+                    _texPtr = (byte*)_texData.Scan0;
+                    _texStride = _texData.Stride;
+                }
+                else
+                {
+                    _texPtr = null;
+                }
+            }
+        }
+
         struct VertexData
         {
             public Vector4 ScreenPos;
             public Vector3 WorldPos;
             public Vector3 Normal;
+            public Vector2 TexCoord;
+            public Vector3 Tangent;
         }
 
         private Vector3[] ComputeVertexNormals(ModelClass model)
@@ -48,7 +76,8 @@ namespace ModelExplorerLibrary.Render
             {
                 ScreenPos = v1.ScreenPos + (v2.ScreenPos - v1.ScreenPos) * t,
                 WorldPos = Vector3.Lerp(v1.WorldPos, v2.WorldPos, t),
-                Normal = Vector3.Normalize(Vector3.Lerp(v1.Normal, v2.Normal, t))
+                Normal = Vector3.Normalize(Vector3.Lerp(v1.Normal, v2.Normal, t)),
+                TexCoord = Vector2.Lerp(v1.TexCoord, v2.TexCoord, t)
             };
         }
 
@@ -95,32 +124,31 @@ namespace ModelExplorerLibrary.Render
                 {
                     zBuffer[idx] = currentZ;
 
-                    Vector3 pixelNormal = Vector3.Normalize(Vector3.Lerp(a.Normal, b.Normal, t));
-                    Vector3 pixelWorldPos = Vector3.Lerp(a.WorldPos, b.WorldPos, t);
-
-                    Vector3 N = Vector3.Normalize(pixelNormal);
-                    Vector3 V = Vector3.Normalize(-cameraPos + pixelWorldPos);
+                    Vector3 N = Vector3.Normalize(Vector3.Lerp(a.Normal, b.Normal, t));
+                    Vector3 V = Vector3.Normalize(-cameraPos + Vector3.Lerp(a.WorldPos, b.WorldPos, t));
                     Vector3 L = Vector3.Normalize(-_lightDir);
                     Vector3 R = Vector3.Reflect(_lightDir, N);
 
-                    Vector3 ambient = settings.AmbientColor;
+                    float diff = Math.Max(Vector3.Dot(N, L), 0.0f);
+                    float spec = MathF.Pow(Math.Max(Vector3.Dot(R, V), 0.0f), settings.Shininess);
+                    Vector3 finalColor = settings.AmbientColor + (diff * new Vector3(0.8f)) + (settings.SpecularStrength * spec * Vector3.One);
 
-                    float dotNL = Vector3.Dot(N, L);
-                    float diff = Math.Max(dotNL, 0.0f);
-                    Vector3 diffuse = diff * new Vector3(0.8f, 0.8f, 0.8f);
+                    // БЫСТРЫЙ ДОСТУП К ТЕКСТУРЕ
+                    if (_texPtr != null)
+                    {
+                        Vector2 uv = Vector2.Lerp(a.TexCoord, b.TexCoord, t);
+                        int texX = (int)((uv.X - MathF.Floor(uv.X)) * (_texWidth - 1));
+                        int texY = (int)((1 - (uv.Y - MathF.Floor(uv.Y))) * (_texHeight - 1));
 
-                    float dotRV = Vector3.Dot(R, V);
-                    float spec = MathF.Pow(Math.Max(dotRV, 0.0f), settings.Shininess);
-                    Vector3 specular = settings.SpecularStrength * spec * Vector3.One;
+                        byte* pSource = _texPtr + (texY * _texStride) + (texX * 4);
+                        finalColor *= new Vector3(pSource[2] / 255f, pSource[1] / 255f, pSource[0] / 255f);
+                    }
 
-                    Vector3 finalColor = ambient + diffuse + specular;
+                    int r = (int)(Math.Clamp(finalColor.X, 0, 1) * 255);
+                    int g = (int)(Math.Clamp(finalColor.Y, 0, 1) * 255);
+                    int b_col = (int)(Math.Clamp(finalColor.Z, 0, 1) * 255);
 
-                    int r = (int)(Math.Min(1.0f, finalColor.X) * 255);
-                    int g = (int)(Math.Min(1.0f, finalColor.Y) * 255);
-                    int b_col = (int)(Math.Min(1.0f, finalColor.Z) * 255);
-
-                    int color = (255 << 24) | (r << 16) | (g << 8) | b_col;
-                    *(pBase + y * (stride / 4) + x) = color;
+                    *(pBase + y * (stride / 4) + x) = (255 << 24) | (r << 16) | (g << 8) | b_col;
                 }
             }
         }
@@ -164,6 +192,18 @@ namespace ModelExplorerLibrary.Render
 
                 foreach (var face in model.Faces)
                 {
+                    Vector3 edge1 = model.Vertices[face.VertexIndices[1]] - model.Vertices[face.VertexIndices[0]];
+                    Vector3 edge2 = model.Vertices[face.VertexIndices[2]] - model.Vertices[face.VertexIndices[0]];
+                    Vector2 duv1 = model.TextureCoordinates[face.TexCoordIndices[1]] - model.TextureCoordinates[face.TexCoordIndices[0]];
+                    Vector2 duv2 = model.TextureCoordinates[face.TexCoordIndices[2]] - model.TextureCoordinates[face.TexCoordIndices[0]];
+
+                    float f = 1.0f / (duv1.X * duv2.Y - duv2.X * duv1.Y);
+                    Vector3 tangent = new Vector3(
+                        f * (duv2.Y * edge1.X - duv1.Y * edge2.X),
+                        f * (duv2.Y * edge1.Y - duv1.Y * edge2.Y),
+                        f * (duv2.Y * edge1.Z - duv1.Y * edge2.Z)
+                    );
+
                     int i0 = face.VertexIndices[0], i1 = face.VertexIndices[1], i2 = face.VertexIndices[2];
 
                     Vector4 v0_w = modelMatrix * new Vector4(model.Vertices[i0], 1);
@@ -189,19 +229,22 @@ namespace ModelExplorerLibrary.Render
                         {
                             ScreenPos = new Vector4(p0.X, p0.Y, c0.W, 1),
                             WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z),
-                            Normal = TransformNormal(vertexNormals[i0], modelMatrix)
+                            Normal = TransformNormal(vertexNormals[i0], modelMatrix),
+                            TexCoord = face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero
                         },
                         new VertexData
                         {
                             ScreenPos = new Vector4(p1.X, p1.Y, c1.W, 1),
                             WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z),
-                            Normal = TransformNormal(vertexNormals[i1], modelMatrix)
+                            Normal = TransformNormal(vertexNormals[i1], modelMatrix),
+                            TexCoord = face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero
                         },
                         new VertexData
                         {
                             ScreenPos = new Vector4(p2.X, p2.Y, c2.W, 1),
                             WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z),
-                            Normal = TransformNormal(vertexNormals[i2], modelMatrix)
+                            Normal = TransformNormal(vertexNormals[i2], modelMatrix),
+                            TexCoord = face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero
                         },
                         camera.Eye,
                         settings

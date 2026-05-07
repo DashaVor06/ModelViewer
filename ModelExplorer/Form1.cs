@@ -19,6 +19,7 @@ namespace ModelExplorer
         private bool _isRendering = false;
         private Bitmap _frontBuffer;
         private Stopwatch _fpsTimer = new Stopwatch();
+        private CancellationTokenSource _cts = new CancellationTokenSource();
 
         public Form1()
         {
@@ -93,9 +94,30 @@ namespace ModelExplorer
 
             if (dialog.ShowDialog() == DialogResult.OK)
             {
+                _cts.Cancel();
+
                 _model = _parser.Load(dialog.FileName);
                 CenterAndScaleModel();
-                _render.RenderModel(_backBuffer, _model, _settings, _camera);
+
+                // Диалоговое окно с информацией о необходимости выбора диффузной карты
+                MessageBox.Show(
+                    "Необходимо выбрать файл диффузной карты",
+                    "Выбор диффузной карты",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+
+                // Открываем диалог выбора диффузной карты
+                using var textureDialog = new OpenFileDialog();
+                textureDialog.Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.tga|All files|*.*";
+                textureDialog.Title = "Выберите файл диффузной карты";
+
+                if (textureDialog.ShowDialog() == DialogResult.OK)
+                {
+                    _render.DiffuseMap?.Dispose();
+                    _render.DiffuseMap = new Bitmap(textureDialog.FileName);
+                }
+
+               
                 Redraw();
             }
         }
@@ -145,40 +167,47 @@ namespace ModelExplorer
             Redraw();
         }
 
+
         private async void Redraw()
         {
-            // 1. Защита от наложения: если уже рендерим, выходим
             if (_isRendering) return;
-
-            // 2. Ограничение частоты (не чаще 60 FPS)
             if (_fpsTimer.IsRunning && _fpsTimer.ElapsedMilliseconds < 16) return;
 
             _fpsTimer.Restart();
             _isRendering = true;
 
-            // 3. Копируем переменные для потока
+            // Используем токен, чтобы отменить старую задачу, если она есть
+            _cts.Cancel();
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
             var model = _model;
             var settings = _settings;
             var camera = _camera;
+            var back = _backBuffer;
 
-            // 4. Тяжелый рендеринг в фоновом потоке
-            await Task.Run(() => {
-                _render.RenderModel(_backBuffer, model, settings, camera);
-            });
-
-            // 5. Потокобезопасный "своп" буферов
-            lock (_frontBuffer)
+            try
             {
-                using (Graphics g = Graphics.FromImage(_frontBuffer))
-                {
-                    g.DrawImage(_backBuffer, 0, 0);
-                }
-            }
+                await Task.Run(() => {
+                    if (token.IsCancellationRequested) return;
+                    _render.RenderModel(back, model, settings, camera);
+                }, token);
 
-            // 6. Перерисовка
-            Invalidate();
-            _isRendering = false;
+                Bitmap readyFrame = (Bitmap)back.Clone();
+
+                lock (_frontBuffer)
+                {
+                    _frontBuffer?.Dispose();
+                    _frontBuffer = readyFrame;
+                }
+                Invalidate();
+            }
+            catch (OperationCanceledException) { }
+            finally { _isRendering = false; }
         }
+
+
+
 
         private void Form1_Resize(object sender, EventArgs e)
         {
