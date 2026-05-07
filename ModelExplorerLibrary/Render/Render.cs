@@ -246,9 +246,9 @@ namespace ModelExplorerLibrary.Render
                     //-----------------------------------------
                     // LIGHTING (Phong Reflection Model)
                     //-----------------------------------------
-                    Vector3 L = Vector3.Normalize(-_lightDir);
+                    Vector3 L = Vector3.Normalize(_lightDir);
                     Vector3 V = Vector3.Normalize(cameraPos - worldPos);
-                    Vector3 R = Vector3.Normalize(Vector3.Reflect(L, N));
+                    Vector3 R = Vector3.Normalize(Vector3.Reflect(-L, N));
 
                     // Diffuse
                     float diff = Math.Max(Vector3.Dot(N, L), 0.0f);
@@ -263,7 +263,7 @@ namespace ModelExplorerLibrary.Render
                         specStrength *= (pSpec[2] / 255f);
                     }
 
-                    float spec = MathF.Pow(Math.Max(Vector3.Dot(R, V), 0.0f), settings.Shininess);
+                    float spec = MathF.Pow(Math.Max(Vector3.Dot(Vector3.Normalize(R), V), 0.0f), settings.Shininess);
 
                     //-----------------------------------------
                     // COLOR COMPOSITION
@@ -336,12 +336,24 @@ namespace ModelExplorerLibrary.Render
                     Vector2 duv1 = model.TextureCoordinates[face.TexCoordIndices[1]] - model.TextureCoordinates[face.TexCoordIndices[0]];
                     Vector2 duv2 = model.TextureCoordinates[face.TexCoordIndices[2]] - model.TextureCoordinates[face.TexCoordIndices[0]];
 
-                    float f = 1.0f / (duv1.X * duv2.Y - duv2.X * duv1.Y);
-                    Vector3 tangent = new Vector3(
-                        f * (duv2.Y * edge1.X - duv1.Y * edge2.X),
-                        f * (duv2.Y * edge1.Y - duv1.Y * edge2.Y),
-                        f * (duv2.Y * edge1.Z - duv1.Y * edge2.Z)
-                    );
+                    float det = duv1.X * duv2.Y - duv2.X * duv1.Y;
+
+                    Vector3 tangent;
+
+                    if (MathF.Abs(det) < 1e-6f)
+                    {
+                        tangent = Vector3.UnitX; // fallback
+                    }
+                    else
+                    {
+                        float f = 1.0f / det;
+
+                        tangent = Vector3.Normalize(new Vector3(
+                            f * (duv2.Y * edge1.X - duv1.Y * edge2.X),
+                            f * (duv2.Y * edge1.Y - duv1.Y * edge2.Y),
+                            f * (duv2.Y * edge1.Z - duv1.Y * edge2.Z)
+                        ));
+                    }
 
                     int i0 = face.VertexIndices[0], i1 = face.VertexIndices[1], i2 = face.VertexIndices[2];
 
@@ -366,19 +378,36 @@ namespace ModelExplorerLibrary.Render
                     Vector4 p2 = c2 / c2.W;
 
                     // Backface culling
-                    if ((p1.X - p0.X) * (p2.Y - p0.Y) - (p1.Y - p0.Y) * (p2.X - p0.X) >= 0) continue;
+                    float cross = (p1.X - p0.X) * (p2.Y - p0.Y) - (p1.Y - p0.Y) * (p2.X - p0.X);
+                    if (cross >= 0)
+                        continue;
 
                     // Важно: invW — это то, что мы будем интерполировать линейно
                     float invW0 = 1.0f / c0.W;
                     float invW1 = 1.0f / c1.W;
                     float invW2 = 1.0f / c2.W;
 
+                    Vector3 n0 =
+                        face.NormalIndices[0] >= 0
+                        ? model.Normals[face.NormalIndices[0]]
+                        : vertexNormals[i0];
+
+                    Vector3 n1 =
+                        face.NormalIndices[1] >= 0
+                        ? model.Normals[face.NormalIndices[1]]
+                        : vertexNormals[i1];
+
+                    Vector3 n2 =
+                        face.NormalIndices[2] >= 0
+                        ? model.Normals[face.NormalIndices[2]]
+                        : vertexNormals[i2];
+
                     FillTriangleScanlinePhong(pBase, _zBuffer, width, height, stride,
                         new VertexData
                         {
                             ScreenPos = new Vector4(p0.X, p0.Y, p0.Z, invW0),
                             WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z) * invW0,
-                            Normal = TransformNormal(vertexNormals[i0], modelMatrix) * invW0,
+                            Normal = TransformNormal(n0, modelMatrix) * invW0,
                             TexCoord = (face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero) * invW0,
                             Tangent = tangent * invW0
                         },
@@ -386,7 +415,7 @@ namespace ModelExplorerLibrary.Render
                         {
                             ScreenPos = new Vector4(p1.X, p1.Y, p1.Z, invW1),
                             WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z) * invW1,
-                            Normal = TransformNormal(vertexNormals[i1], modelMatrix) * invW1,
+                            Normal = TransformNormal(n1, modelMatrix) * invW1,
                             TexCoord = (face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero) * invW1,
                             Tangent = tangent * invW1
                         },
@@ -394,7 +423,7 @@ namespace ModelExplorerLibrary.Render
                         {
                             ScreenPos = new Vector4(p2.X, p2.Y, p2.Z, invW2),
                             WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z) * invW2,
-                            Normal = TransformNormal(vertexNormals[i2], modelMatrix) * invW2,
+                            Normal = TransformNormal(n2, modelMatrix) * invW2,
                             TexCoord = (face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero) * invW2,
                             Tangent = tangent * invW2
                         },
