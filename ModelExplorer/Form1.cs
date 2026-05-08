@@ -18,8 +18,6 @@ namespace ModelExplorer
         private bool _isDirty = false;
         private bool _isRendering = false;
         private Bitmap _frontBuffer;
-        private Stopwatch _fpsTimer = new Stopwatch();
-        private CancellationTokenSource _cts = new CancellationTokenSource();
 
         public Form1()
         {
@@ -94,7 +92,6 @@ namespace ModelExplorer
 
             if (dialog.ShowDialog() == DialogResult.OK)
             {
-                _cts.Cancel();
 
                 _model = _parser.Load(dialog.FileName);
                 CenterAndScaleModel();
@@ -180,15 +177,7 @@ namespace ModelExplorer
         private async void Redraw()
         {
             if (_isRendering) return;
-            if (_fpsTimer.IsRunning && _fpsTimer.ElapsedMilliseconds < 16) return;
-
-            _fpsTimer.Restart();
             _isRendering = true;
-
-            // Используем токен, чтобы отменить старую задачу, если она есть
-            _cts.Cancel();
-            _cts = new CancellationTokenSource();
-            var token = _cts.Token;
 
             var model = _model;
             var settings = _settings;
@@ -198,9 +187,8 @@ namespace ModelExplorer
             try
             {
                 await Task.Run(() => {
-                    if (token.IsCancellationRequested) return;
                     _render.RenderModel(back, model, settings, camera);
-                }, token);
+                });
 
                 Bitmap readyFrame = (Bitmap)back.Clone();
 
@@ -211,11 +199,9 @@ namespace ModelExplorer
                 }
                 Invalidate();
             }
-            catch (OperationCanceledException) { }
+            catch { }
             finally { _isRendering = false; }
         }
-
-
 
 
         private void Form1_Resize(object sender, EventArgs e)

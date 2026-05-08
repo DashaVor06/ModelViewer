@@ -103,7 +103,6 @@ namespace ModelExplorerLibrary.Render
             public Vector3 WorldPos;
             public Vector3 Normal;
             public Vector2 TexCoord;
-            public Vector3 Tangent;
         }
 
         private Vector3[] ComputeVertexNormals(ModelClass model)
@@ -137,7 +136,6 @@ namespace ModelExplorerLibrary.Render
                 WorldPos = v1.WorldPos + (v2.WorldPos - v1.WorldPos) * t,
                 Normal = v1.Normal + (v2.Normal - v1.Normal) * t,
                 TexCoord = v1.TexCoord + (v2.TexCoord - v1.TexCoord) * t,
-                Tangent = v1.Tangent + (v2.Tangent - v1.Tangent) * t
             };
         }
 
@@ -193,9 +191,6 @@ namespace ModelExplorerLibrary.Render
             for (int x = startX; x <= endX; x++)
             {
                 float t = (x - a.ScreenPos.X) / widthX;
-
-                // 1. Интерполируем 1/W и Z (глубина для буфера)
-                float interpolatedInvW = a.ScreenPos.W + (b.ScreenPos.W - a.ScreenPos.W) * t;
                 float currentZ = a.ScreenPos.Z + (b.ScreenPos.Z - a.ScreenPos.Z) * t;
 
                 int idx = y * width + x;
@@ -203,11 +198,13 @@ namespace ModelExplorerLibrary.Render
                 {
                     zBuffer[idx] = currentZ;
 
+                    // 1. Интерполируем 1/W
+                    float interpolatedInvW = a.ScreenPos.W + (b.ScreenPos.W - a.ScreenPos.W) * t;
+
                     // 2. Вычисляем текущее W для восстановления атрибутов
                     float currentW = 1.0f / interpolatedInvW;
 
                     // 3. Восстановление атрибутов (Perspective Correct Mapping)
-                    // Эти значения должны быть предварительно разделены на W в Vertex Shader
                     Vector2 uv = (a.TexCoord + (b.TexCoord - a.TexCoord) * t) * currentW;
                     Vector3 worldPos = (a.WorldPos + (b.WorldPos - a.WorldPos) * t) * currentW;
 
@@ -225,21 +222,20 @@ namespace ModelExplorerLibrary.Render
                         int ny = (int)((1.0f - v) * (_normHeight - 1));
                         byte* pNorm = _normPtr + (ny * _normStride) + (nx * 4);
 
-                        Vector3 rawNormal = new Vector3(
+                        // Извлекаем вектор из текстуры (диапазон [0, 1] -> [-1, 1])
+                        Vector3 modelSpaceNormal = new Vector3(
                             (pNorm[2] / 255f) * 2f - 1f,
                             (pNorm[1] / 255f) * 2f - 1f,
                             (pNorm[0] / 255f) * 2f - 1f
                         );
 
-                        // Восстанавливаем базис TBN
-                        Vector3 T = Vector3.Normalize((a.Tangent + (b.Tangent - a.Tangent) * t) * currentW);
-                        Vector3 N0 = Vector3.Normalize((a.Normal + (b.Normal - a.Normal) * t) * currentW);
-                        Vector3 B = Vector3.Normalize(Vector3.Cross(N0, T));
-
-                        N = Vector3.Normalize(T * rawNormal.X + B * rawNormal.Y + N0 * rawNormal.Z);
+                        // Прямо трансформируем вектор из пространства модели в мировое пространство
+                        // Используем TransformNormal (умножение на матрицу модели без учета трансляции)
+                        N = TransformNormal(modelSpaceNormal, modelMatrix);
                     }
                     else
                     {
+                        // Обычная интерполированная нормаль (уже в мировом пространстве)
                         N = Vector3.Normalize((a.Normal + (b.Normal - a.Normal) * t) * currentW);
                     }
 
@@ -331,101 +327,63 @@ namespace ModelExplorerLibrary.Render
 
                 foreach (var face in model.Faces)
                 {
-                    Vector3 edge1 = model.Vertices[face.VertexIndices[1]] - model.Vertices[face.VertexIndices[0]];
-                    Vector3 edge2 = model.Vertices[face.VertexIndices[2]] - model.Vertices[face.VertexIndices[0]];
-                    Vector2 duv1 = model.TextureCoordinates[face.TexCoordIndices[1]] - model.TextureCoordinates[face.TexCoordIndices[0]];
-                    Vector2 duv2 = model.TextureCoordinates[face.TexCoordIndices[2]] - model.TextureCoordinates[face.TexCoordIndices[0]];
-
-                    float det = duv1.X * duv2.Y - duv2.X * duv1.Y;
-
-                    Vector3 tangent;
-
-                    if (MathF.Abs(det) < 1e-6f)
-                    {
-                        tangent = Vector3.UnitX; // fallback
-                    }
-                    else
-                    {
-                        float f = 1.0f / det;
-
-                        tangent = Vector3.Normalize(new Vector3(
-                            f * (duv2.Y * edge1.X - duv1.Y * edge2.X),
-                            f * (duv2.Y * edge1.Y - duv1.Y * edge2.Y),
-                            f * (duv2.Y * edge1.Z - duv1.Y * edge2.Z)
-                        ));
-                    }
-
+                    // 1. Извлекаем индексы вершин треугольника
                     int i0 = face.VertexIndices[0], i1 = face.VertexIndices[1], i2 = face.VertexIndices[2];
 
+                    // 2. Трансформируем вершины в Мировое пространство (для освещения)
                     Vector4 v0_w = modelMatrix * new Vector4(model.Vertices[i0], 1);
                     Vector4 v1_w = modelMatrix * new Vector4(model.Vertices[i1], 1);
                     Vector4 v2_w = modelMatrix * new Vector4(model.Vertices[i2], 1);
-                    Vector3 normal = Vector3.Normalize(
-                        Vector3.Cross(
-                            new Vector3(v2_w.X - v0_w.X, v2_w.Y - v0_w.Y, v2_w.Z - v0_w.Z),
-                            new Vector3(v1_w.X - v0_w.X, v1_w.Y - v0_w.Y, v1_w.Z - v0_w.Z)));
 
-                    // Проекция координат
+                    // 3. Проекция координат (MVP) — перевод из 3D в пространство отсечения
                     Vector4 c0 = mvp * new Vector4(model.Vertices[i0], 1);
                     Vector4 c1 = mvp * new Vector4(model.Vertices[i1], 1);
                     Vector4 c2 = mvp * new Vector4(model.Vertices[i2], 1);
 
+                    // Отсекаем треугольники, которые находятся за камерой
                     if (c0.W <= 0 || c1.W <= 0 || c2.W <= 0) continue;
 
-                    // NDC -> Screen
+                    // 4. Переход в экранные координаты (NDC -> Screen)
                     Vector4 p0 = c0 / c0.W;
                     Vector4 p1 = c1 / c1.W;
                     Vector4 p2 = c2 / c2.W;
 
-                    // Backface culling
+                    // 5. Backface culling (удаление невидимых граней)
                     float cross = (p1.X - p0.X) * (p2.Y - p0.Y) - (p1.Y - p0.Y) * (p2.X - p0.X);
-                    if (cross >= 0)
-                        continue;
+                    if (cross >= 0) continue;
 
-                    // Важно: invW — это то, что мы будем интерполировать линейно
+                    // 6. Подготовка коэффициентов 1/W для перспективно-корректной интерполяции
                     float invW0 = 1.0f / c0.W;
                     float invW1 = 1.0f / c1.W;
                     float invW2 = 1.0f / c2.W;
 
-                    Vector3 n0 =
-                        face.NormalIndices[0] >= 0
-                        ? model.Normals[face.NormalIndices[0]]
-                        : vertexNormals[i0];
+                    // 7. Получаем нормали вершин (используем готовые или считаем средние)
+                    Vector3 n0 = face.NormalIndices[0] >= 0 ? model.Normals[face.NormalIndices[0]] : vertexNormals[i0];
+                    Vector3 n1 = face.NormalIndices[1] >= 0 ? model.Normals[face.NormalIndices[1]] : vertexNormals[i1];
+                    Vector3 n2 = face.NormalIndices[2] >= 0 ? model.Normals[face.NormalIndices[2]] : vertexNormals[i2];
 
-                    Vector3 n1 =
-                        face.NormalIndices[1] >= 0
-                        ? model.Normals[face.NormalIndices[1]]
-                        : vertexNormals[i1];
-
-                    Vector3 n2 =
-                        face.NormalIndices[2] >= 0
-                        ? model.Normals[face.NormalIndices[2]]
-                        : vertexNormals[i2];
-
+                    // 8. Отрисовка: передаем данные, предварительно разделив их на W
                     FillTriangleScanlinePhong(pBase, _zBuffer, width, height, stride,
                         new VertexData
                         {
                             ScreenPos = new Vector4(p0.X, p0.Y, p0.Z, invW0),
                             WorldPos = new Vector3(v0_w.X, v0_w.Y, v0_w.Z) * invW0,
                             Normal = TransformNormal(n0, modelMatrix) * invW0,
-                            TexCoord = (face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero) * invW0,
-                            Tangent = tangent * invW0
+                            TexCoord = (face.TexCoordIndices[0] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[0]] : Vector2.Zero) * invW0
                         },
                         new VertexData
                         {
                             ScreenPos = new Vector4(p1.X, p1.Y, p1.Z, invW1),
                             WorldPos = new Vector3(v1_w.X, v1_w.Y, v1_w.Z) * invW1,
                             Normal = TransformNormal(n1, modelMatrix) * invW1,
-                            TexCoord = (face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero) * invW1,
-                            Tangent = tangent * invW1
+                            TexCoord = (face.TexCoordIndices[1] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[1]] : Vector2.Zero) * invW1
                         },
                         new VertexData
                         {
                             ScreenPos = new Vector4(p2.X, p2.Y, p2.Z, invW2),
                             WorldPos = new Vector3(v2_w.X, v2_w.Y, v2_w.Z) * invW2,
                             Normal = TransformNormal(n2, modelMatrix) * invW2,
-                            TexCoord = (face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero) * invW2,
-                            Tangent = tangent * invW2
+                            TexCoord = (face.TexCoordIndices[2] >= 0 ? model.TextureCoordinates[face.TexCoordIndices[2]] : Vector2.Zero) * invW2
                         },
                         camera.Eye, settings, modelMatrix
                     );
